@@ -152,8 +152,10 @@ private fun NodeBody(node: UiNode, scope: BindingScope, itemIndex: Int) {
         else -> Modifier
     }
     val modifier = node.studioModifier()
+        .then(node.studioScrollModifier())
         .then(node.surfaceModifier())
         .then(node.borderModifier())
+        .then(node.studioInteractionModifier { fireAction(session, coroutine, tap, scope) })
         .then(clickModifier)
     fun nativeTap() {
         if (runTap && !hasExtra) fireAction(session, coroutine, tap, scope)
@@ -334,10 +336,7 @@ private fun StudioColumn(node: UiNode, scope: BindingScope, modifier: Modifier) 
             ) {
                 Spacer(Modifier.weight(1f))
             }
-            Box(
-                constraintFlowModifier(child.constraints)
-                    .then(child.modifiers.weight?.let { Modifier.weight(it) } ?: Modifier),
-            ) { RenderNode(child, scope, index) }
+            Box(columnChildScopeModifier(child)) { RenderNode(child, scope, index) }
         }
     }
 }
@@ -346,10 +345,7 @@ private fun StudioColumn(node: UiNode, scope: BindingScope, modifier: Modifier) 
 private fun StudioRow(node: UiNode, scope: BindingScope, modifier: Modifier) {
     Row(modifier, rowArrangement(node), rowAlignment(node)) {
         node.children.forEachIndexed { index, child ->
-            Box(
-                constraintFlowModifier(child.constraints)
-                    .then(child.modifiers.weight?.let { Modifier.weight(it) } ?: Modifier),
-            ) { RenderNode(child, scope, index) }
+            Box(rowChildScopeModifier(child)) { RenderNode(child, scope, index) }
         }
     }
 }
@@ -427,46 +423,6 @@ private fun resolve(node: UiNode, key: String, scope: BindingScope): String? {
     return node.props.prop(key)
 }
 
-private fun UiNode.studioModifier(): Modifier {
-    var modifier: Modifier = Modifier
-    if (modifiers.fillMaxSize) {
-        modifier = modifier.fillMaxSize()
-    } else {
-        val widthMode = modifiers.widthMode
-        val heightMode = modifiers.heightMode
-        if (modifiers.fillMaxWidth || widthMode == "fill") modifier = modifier.fillMaxWidth()
-        if (modifiers.fillMaxHeight || heightMode == "fill") modifier = modifier.fillMaxHeight()
-    }
-    modifiers.widthDp?.let { modifier = modifier.width(it.dp) }
-    modifiers.heightDp?.let { modifier = modifier.height(it.dp) }
-    modifiers.aspectRatio?.takeIf { it > 0f }?.let { modifier = modifier.aspectRatio(it) }
-    modifiers.margin?.let { pad ->
-        modifier = if (pad.all != null) modifier.padding(pad.all.dp)
-        else modifier.padding(
-            start = (pad.start ?: 0).dp,
-            top = (pad.top ?: 0).dp,
-            end = (pad.end ?: 0).dp,
-            bottom = (pad.bottom ?: 0).dp,
-        )
-    }
-    modifiers.padding?.let { pad ->
-        modifier = if (pad.all != null) modifier.padding(pad.all.dp)
-        else modifier.padding(
-            start = (pad.start ?: 0).dp,
-            top = (pad.top ?: 0).dp,
-            end = (pad.end ?: 0).dp,
-            bottom = (pad.bottom ?: 0).dp,
-        )
-    }
-    if (modifiers.offsetXDp != null || modifiers.offsetYDp != null) {
-        modifier = modifier.offset(
-            x = (modifiers.offsetXDp ?: 0).dp,
-            y = (modifiers.offsetYDp ?: 0).dp,
-        )
-    }
-    clipShape(modifiers.clip)?.let { modifier = modifier.clip(it) }
-    return modifier
-}
 
 @Composable
 private fun UiNode.surfaceModifier(): Modifier {
@@ -489,14 +445,6 @@ private fun UiNode.borderModifier(): Modifier {
     return Modifier.border(width.dp, colorToken(modifiers.borderToken ?: "outline"), shape)
 }
 
-private fun clipShape(clip: String?) = when (clip) {
-    "extraSmall" -> RoundedCornerShape(4.dp)
-    "small" -> RoundedCornerShape(8.dp)
-    "medium" -> RoundedCornerShape(12.dp)
-    "large" -> RoundedCornerShape(16.dp)
-    "full" -> CircleShape
-    else -> null
-}
 
 private fun enterTransition(animation: EnterAnimation?, itemIndex: Int) = run {
     val delay = (animation?.delayMs ?: 0) + itemIndex * (animation?.staggerMs ?: 0)

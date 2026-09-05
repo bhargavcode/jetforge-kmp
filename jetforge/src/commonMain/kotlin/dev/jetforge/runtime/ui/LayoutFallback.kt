@@ -36,51 +36,77 @@ internal fun hasPeerAnchors(constraints: ConstraintSpec?): Boolean {
         constraints.verticalCenterOf != null
 }
 
+internal fun normalizeToken(value: String?): String =
+    value.orEmpty().substringAfterLast('.').replace(" ", "").lowercase()
+
 internal fun columnArrangement(node: UiNode): Arrangement.Vertical {
     val gap = node.props.int("spacedBy", 8).dp
-    return when (node.props.prop("arrangement") ?: "top") {
+    val key = normalizeToken(
+        node.props.prop("verticalArrangement") ?: node.props.prop("arrangement") ?: "Top",
+    )
+    val spacedAlign = verticalAlignmentOf(node.props.prop("spacedByAlignment"))
+    return when (key) {
         "center" -> Arrangement.spacedBy(gap, Alignment.CenterVertically)
         "bottom", "end" -> Arrangement.spacedBy(gap, Alignment.Bottom)
-        "spaceBetween" -> Arrangement.SpaceBetween
-        "spaceEvenly" -> Arrangement.SpaceEvenly
-        "spaceAround" -> Arrangement.SpaceAround
-        else -> Arrangement.spacedBy(gap)
+        "spacebetween" -> Arrangement.SpaceBetween
+        "spaceevenly" -> Arrangement.SpaceEvenly
+        "spacearound" -> Arrangement.SpaceAround
+        else -> if (spacedAlign != null) Arrangement.spacedBy(gap, spacedAlign) else Arrangement.spacedBy(gap)
     }
 }
 
 internal fun rowArrangement(node: UiNode): Arrangement.Horizontal {
     val gap = node.props.int("spacedBy", 8).dp
-    return when (node.props.prop("arrangement") ?: "start") {
+    val key = normalizeToken(
+        node.props.prop("horizontalArrangement") ?: node.props.prop("arrangement") ?: "Start",
+    )
+    val spacedAlign = horizontalAlignmentOf(node.props.prop("spacedByAlignment"))
+    return when (key) {
         "center" -> Arrangement.spacedBy(gap, Alignment.CenterHorizontally)
-        "end" -> Arrangement.spacedBy(gap, Alignment.End)
-        "spaceBetween" -> Arrangement.SpaceBetween
-        "spaceEvenly" -> Arrangement.SpaceEvenly
-        "spaceAround" -> Arrangement.SpaceAround
-        else -> Arrangement.spacedBy(gap)
+        "end", "bottom" -> Arrangement.spacedBy(gap, Alignment.End)
+        "spacebetween" -> Arrangement.SpaceBetween
+        "spaceevenly" -> Arrangement.SpaceEvenly
+        "spacearound" -> Arrangement.SpaceAround
+        else -> if (spacedAlign != null) Arrangement.spacedBy(gap, spacedAlign) else Arrangement.spacedBy(gap)
     }
 }
 
-internal fun columnAlignment(node: UiNode): Alignment.Horizontal = when (node.props.prop("alignment")) {
-    "center" -> Alignment.CenterHorizontally
-    "end" -> Alignment.End
-    else -> Alignment.Start
+internal fun columnAlignment(node: UiNode): Alignment.Horizontal =
+    horizontalAlignmentOf(node.props.prop("horizontalAlignment") ?: node.props.prop("alignment"))
+        ?: Alignment.Start
+
+internal fun rowAlignment(node: UiNode): Alignment.Vertical =
+    verticalAlignmentOf(node.props.prop("verticalAlignment") ?: node.props.prop("alignment"))
+        ?: Alignment.Top
+
+internal fun boxAlignment(node: UiNode): Alignment =
+    twoDimensionalAlignment(node.props.prop("contentAlignment") ?: node.props.prop("alignment"))
+
+internal fun horizontalAlignmentOf(value: String?): Alignment.Horizontal? = when (normalizeToken(value)) {
+    "end", "topend", "centerend", "bottomend" -> Alignment.End
+    "center", "centerhorizontally", "topcenter", "bottomcenter" -> Alignment.CenterHorizontally
+    "start", "top", "topstart", "centerstart", "bottomstart" -> Alignment.Start
+    else -> null
 }
 
-internal fun rowAlignment(node: UiNode): Alignment.Vertical = when (node.props.prop("alignment")) {
-    "top", "start" -> Alignment.Top
-    "bottom", "end" -> Alignment.Bottom
-    else -> Alignment.CenterVertically
+internal fun verticalAlignmentOf(value: String?): Alignment.Vertical? = when (normalizeToken(value)) {
+    "bottom", "end", "bottomstart", "bottomcenter", "bottomend" -> Alignment.Bottom
+    "center", "centervertically", "centerstart", "centerend" -> Alignment.CenterVertically
+    "top", "start", "topstart", "topcenter", "topend" -> Alignment.Top
+    else -> null
 }
 
-internal fun boxAlignment(node: UiNode): Alignment = when (node.props.prop("alignment")) {
-    "topCenter" -> Alignment.TopCenter
-    "topEnd" -> Alignment.TopEnd
-    "centerStart" -> Alignment.CenterStart
-    "center" -> Alignment.Center
-    "centerEnd" -> Alignment.CenterEnd
-    "bottomStart" -> Alignment.BottomStart
-    "bottomCenter" -> Alignment.BottomCenter
-    "bottomEnd" -> Alignment.BottomEnd
+internal fun twoDimensionalAlignment(value: String?): Alignment = when (normalizeToken(value)) {
+    "topcenter" -> Alignment.TopCenter
+    "topend" -> Alignment.TopEnd
+    "centerstart" -> Alignment.CenterStart
+    "center", "centerhorizontally", "centervertically" -> Alignment.Center
+    "centerend" -> Alignment.CenterEnd
+    "bottomstart" -> Alignment.BottomStart
+    "bottomcenter" -> Alignment.BottomCenter
+    "bottomend" -> Alignment.BottomEnd
+    "end" -> Alignment.TopEnd
+    "bottom" -> Alignment.BottomStart
     else -> Alignment.TopStart
 }
 
@@ -140,7 +166,10 @@ internal fun ConstraintFallbackBox(
             Box(
                 Modifier
                     .then(marginModifier(child.constraints?.margin))
-                    .align(boxChildAlignment(child.constraints)),
+                    .align(
+                        child.modifiers.align?.let { twoDimensionalAlignment(it) }
+                            ?: boxChildAlignment(child.constraints),
+                    ),
             ) { render(child, index) }
         }
     }
