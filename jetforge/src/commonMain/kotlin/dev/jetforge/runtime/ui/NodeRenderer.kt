@@ -17,7 +17,9 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -149,28 +151,28 @@ private fun NodeBody(node: UiNode, scope: BindingScope, itemIndex: Int) {
         runTap -> Modifier.clickable { fireAction(session, coroutine, tap, scope) }
         else -> Modifier
     }
-    val modifier = node.studioModifier().then(clickModifier)
+    val modifier = node.studioModifier()
+        .then(node.surfaceModifier())
+        .then(node.borderModifier())
+        .then(clickModifier)
     fun nativeTap() {
         if (runTap && !hasExtra) fireAction(session, coroutine, tap, scope)
     }
 
     when (node.type) {
-        "Scaffold" -> StudioScaffold(node, scope)
-        "Column" -> Column(
-            modifier = modifier,
-            verticalArrangement = Arrangement.spacedBy(node.props.int("spacedBy", 8).dp),
-        ) { node.children.forEach { RenderNode(it, scope, itemIndex) } }
-        "Row" -> Row(
-            modifier = modifier,
-            horizontalArrangement = Arrangement.spacedBy(node.props.int("spacedBy", 8).dp),
-            verticalAlignment = Alignment.CenterVertically,
-        ) { node.children.forEach { RenderNode(it, scope, itemIndex) } }
-        "Box" -> Box(modifier) { node.children.forEach { RenderNode(it, scope, itemIndex) } }
+        "Scaffold" -> Box(modifier.fillMaxSize()) { StudioScaffold(node, scope) }
+        "Column" -> StudioColumn(node, scope, modifier)
+        "Row" -> StudioRow(node, scope, modifier)
+        "Box" -> ConstraintFallbackBox(node, modifier) { child, index ->
+            RenderNode(child, scope, index)
+        }
         "LazyColumn" -> StudioList(node, scope, modifier)
         "Card" -> Card(
             modifier = modifier,
             shape = clipShape(node.modifiers.clip) ?: RoundedCornerShape(12.dp),
-            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+            colors = CardDefaults.cardColors(
+                containerColor = node.surfaceColor() ?: MaterialTheme.colorScheme.surface,
+            ),
             elevation = CardDefaults.cardElevation(
                 defaultElevation = if (node.props.prop("variant") == "outlined") 0.dp else 1.dp,
             ),
@@ -220,7 +222,12 @@ private fun NodeBody(node: UiNode, scope: BindingScope, itemIndex: Int) {
         "TextButton" -> TextButton(
             onClick = { nativeTap() },
             modifier = modifier,
-        ) { Text(resolve(node, "label", scope) ?: "Action") }
+        ) {
+            Text(
+                resolve(node, "label", scope) ?: node.props.prop("label") ?: "Action",
+                color = colorToken(node.props.prop("color") ?: "primary"),
+            )
+        }
         "Chip" -> AssistChip(
             onClick = { nativeTap() },
             label = { Text(resolve(node, "label", scope) ?: "Chip") },
@@ -259,10 +266,28 @@ private fun NodeBody(node: UiNode, scope: BindingScope, itemIndex: Int) {
         )
         "Image" -> {
             val accent = parseHex(resolve(node, "accent", scope) ?: node.props.prop("accent") ?: "#6750A4")
+            val shape = clipShape(node.modifiers.clip) ?: RoundedCornerShape(8.dp)
+            val heightMode = node.modifiers.heightMode
+                ?: when {
+                    node.modifiers.fillMaxHeight || node.modifiers.fillMaxSize -> "fill"
+                    node.modifiers.heightDp != null -> "fixed"
+                    else -> "wrap"
+                }
+            val preserveAspect = heightMode == "wrap" && node.modifiers.heightDp == null
+            val imageModifier = if (preserveAspect) {
+                // Do not force 72.dp — that crops card screenshots down to a button-sized strip.
+                modifier.clip(shape)
+            } else if (node.modifiers.heightDp == null && heightMode != "fill") {
+                modifier.height(72.dp).clip(shape)
+            } else {
+                modifier.clip(shape)
+            }
             RemoteImage(
                 url = resolveMediaUrl(resolve(node, "url", scope).orEmpty(), JetForge.config.baseUrl),
                 accent = accent,
-                modifier = modifier.height((node.modifiers.heightDp ?: 72).dp).clip(clipShape(node.modifiers.clip) ?: RoundedCornerShape(8.dp)),
+                modifier = imageModifier,
+                contentScale = contentScaleOf(node.props.prop("contentScale")),
+                preserveAspectRatio = preserveAspect,
                 contentDescription = node.props.prop("alt"),
             )
         }
@@ -299,21 +324,75 @@ private fun NodeBody(node: UiNode, scope: BindingScope, itemIndex: Int) {
     }
 }
 
+@Composable
+private fun StudioColumn(node: UiNode, scope: BindingScope, modifier: Modifier) {
+    Column(modifier, columnArrangement(node), columnAlignment(node)) {
+        node.children.forEachIndexed { index, child ->
+            if (
+                (child.constraints?.bottomToBottomOf == "parent" || child.constraints?.vertical == "bottom") &&
+                index == node.children.lastIndex
+            ) {
+                Spacer(Modifier.weight(1f))
+            }
+            Box(
+                constraintFlowModifier(child.constraints)
+                    .then(child.modifiers.weight?.let { Modifier.weight(it) } ?: Modifier),
+            ) { RenderNode(child, scope, index) }
+        }
+    }
+}
+
+@Composable
+private fun StudioRow(node: UiNode, scope: BindingScope, modifier: Modifier) {
+    Row(modifier, rowArrangement(node), rowAlignment(node)) {
+        node.children.forEachIndexed { index, child ->
+            Box(
+                constraintFlowModifier(child.constraints)
+                    .then(child.modifiers.weight?.let { Modifier.weight(it) } ?: Modifier),
+            ) { RenderNode(child, scope, index) }
+        }
+    }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun StudioScaffold(node: UiNode, scope: BindingScope) {
     val top = node.children.find { it.slot == "topBar" || it.type == "TopAppBar" }
     val bottom = node.children.find { it.slot == "bottomBar" || it.type == "NavigationBar" }
+    val rail = node.children.find {
+        it.slot == "rail" || it.type == "NavigationRail" || it.type == "NavigationDrawer"
+    }
     val fab = node.children.find { it.slot == "fab" || it.type == "FAB" }
     val content = node.children.find { it.slot == "content" }
-        ?: node.copy(children = node.children.filter { it != top && it != bottom && it != fab })
+        ?: node.copy(children = node.children.filter { it != top && it != bottom && it != fab && it != rail })
+
+    // Empty chrome must not eat vertical/horizontal space — content gets the full layout.
+    if (top == null && bottom == null && rail == null) {
+        Box(Modifier.fillMaxSize()) {
+            RenderNode(content, scope, 0)
+            if (fab != null) {
+                Box(Modifier.align(Alignment.BottomEnd).padding(16.dp)) {
+                    RenderNode(fab, scope, 0)
+                }
+            }
+        }
+        return
+    }
+
     Scaffold(
+        containerColor = Color.Transparent,
+        contentColor = MaterialTheme.colorScheme.onSurface,
         topBar = { if (top != null) RenderNode(top, scope, 0) },
         bottomBar = { if (bottom != null) RenderNode(bottom, scope, 0) },
         floatingActionButton = { if (fab != null) RenderNode(fab, scope, 0) },
     ) { padding ->
-        Box(Modifier.fillMaxSize().padding(padding)) {
-            RenderNode(content, scope, 0)
+        Row(Modifier.fillMaxSize().padding(padding)) {
+            if (rail != null) {
+                RenderNode(rail, scope, 0)
+            }
+            Box(Modifier.fillMaxSize().weight(1f)) {
+                RenderNode(content, scope, 0)
+            }
         }
     }
 }
@@ -341,17 +420,35 @@ private fun StudioList(node: UiNode, scope: BindingScope, modifier: Modifier) {
 private fun resolve(node: UiNode, key: String, scope: BindingScope): String? {
     val binding = node.bindings[key]
     if (!binding.isNullOrBlank()) {
-        return scope.resolvePath(binding)?.asDisplayString()
+        val resolved = scope.resolvePath(binding)
+        // Match designer resolveProp: only use the binding when it resolves.
+        if (resolved != null) return resolved.asDisplayString()
     }
     return node.props.prop(key)
 }
 
 private fun UiNode.studioModifier(): Modifier {
     var modifier: Modifier = Modifier
-    if (modifiers.fillMaxWidth) modifier = modifier.fillMaxWidth()
-    if (modifiers.fillMaxHeight) modifier = modifier.fillMaxHeight()
+    if (modifiers.fillMaxSize) {
+        modifier = modifier.fillMaxSize()
+    } else {
+        val widthMode = modifiers.widthMode
+        val heightMode = modifiers.heightMode
+        if (modifiers.fillMaxWidth || widthMode == "fill") modifier = modifier.fillMaxWidth()
+        if (modifiers.fillMaxHeight || heightMode == "fill") modifier = modifier.fillMaxHeight()
+    }
     modifiers.widthDp?.let { modifier = modifier.width(it.dp) }
     modifiers.heightDp?.let { modifier = modifier.height(it.dp) }
+    modifiers.aspectRatio?.takeIf { it > 0f }?.let { modifier = modifier.aspectRatio(it) }
+    modifiers.margin?.let { pad ->
+        modifier = if (pad.all != null) modifier.padding(pad.all.dp)
+        else modifier.padding(
+            start = (pad.start ?: 0).dp,
+            top = (pad.top ?: 0).dp,
+            end = (pad.end ?: 0).dp,
+            bottom = (pad.bottom ?: 0).dp,
+        )
+    }
     modifiers.padding?.let { pad ->
         modifier = if (pad.all != null) modifier.padding(pad.all.dp)
         else modifier.padding(
@@ -361,8 +458,35 @@ private fun UiNode.studioModifier(): Modifier {
             bottom = (pad.bottom ?: 0).dp,
         )
     }
+    if (modifiers.offsetXDp != null || modifiers.offsetYDp != null) {
+        modifier = modifier.offset(
+            x = (modifiers.offsetXDp ?: 0).dp,
+            y = (modifiers.offsetYDp ?: 0).dp,
+        )
+    }
     clipShape(modifiers.clip)?.let { modifier = modifier.clip(it) }
     return modifier
+}
+
+@Composable
+private fun UiNode.surfaceModifier(): Modifier {
+    val color = surfaceColor() ?: return Modifier
+    val shape = clipShape(modifiers.clip)
+    return if (shape != null) Modifier.background(color, shape) else Modifier.background(color)
+}
+
+@Composable
+private fun UiNode.surfaceColor(): Color? {
+    modifiers.backgroundHex?.takeIf { it.isNotBlank() }?.let { return parseHex(it) }
+    modifiers.backgroundToken?.takeIf { it.isNotBlank() && it != "none" }?.let { return colorToken(it) }
+    return null
+}
+
+@Composable
+private fun UiNode.borderModifier(): Modifier {
+    val width = modifiers.borderWidthDp ?: return Modifier
+    val shape = clipShape(modifiers.clip) ?: RoundedCornerShape(0.dp)
+    return Modifier.border(width.dp, colorToken(modifiers.borderToken ?: "outline"), shape)
 }
 
 private fun clipShape(clip: String?) = when (clip) {
@@ -407,9 +531,20 @@ private fun colorToken(name: String?): Color {
         "primaryContainer" -> scheme.primaryContainer
         "onPrimaryContainer" -> scheme.onPrimaryContainer
         "secondary" -> scheme.secondary
-        "onSurfaceVariant" -> scheme.onSurfaceVariant
-        "error" -> scheme.error
+        "onSecondary" -> scheme.onSecondary
+        "secondaryContainer" -> scheme.secondaryContainer
+        "onSecondaryContainer" -> scheme.onSecondaryContainer
         "tertiary" -> scheme.tertiary
+        "onTertiary" -> scheme.onTertiary
+        "surface" -> scheme.surface
+        "onSurface" -> scheme.onSurface
+        "onSurfaceVariant" -> scheme.onSurfaceVariant
+        "surfaceContainer" -> scheme.surfaceContainer
+        "surfaceContainerHigh" -> scheme.surfaceContainerHigh
+        "surfaceContainerLowest" -> scheme.surfaceContainerLowest
+        "outline" -> scheme.outline
+        "outlineVariant" -> scheme.outlineVariant
+        "error" -> scheme.error
         else -> scheme.onSurface
     }
 }
@@ -429,17 +564,116 @@ private fun iconOf(name: String): ImageVector = when (name) {
     else -> Icons.Filled.Star
 }
 
-private fun seedScheme(seed: String, dark: Boolean) = if (dark) {
-    darkColorScheme(
-        primary = Color(if (seed == "teal") 0xFF4CDADA else if (seed == "blue") 0xFFA9C7FF else if (seed == "orange") 0xFFFFB870 else 0xFFD0BCFF),
+private fun seedScheme(seed: String, dark: Boolean) = when {
+    dark && seed == "teal" -> darkColorScheme(
+        primary = Color(0xFF4CDADA),
+        onPrimary = Color(0xFF003737),
+        primaryContainer = Color(0xFF004F4F),
+        onPrimaryContainer = Color(0xFF6FF7F6),
+        secondary = Color(0xFFB0CCCC),
+        surface = Color(0xFF0E1514),
+        onSurface = Color(0xFFDDE4E3),
+        onSurfaceVariant = Color(0xFFBEC9C8),
+        surfaceContainer = Color(0xFF1A2120),
+        surfaceContainerHigh = Color(0xFF242B2A),
+        surfaceContainerLowest = Color(0xFF090F0F),
+        outline = Color(0xFF889392),
+        outlineVariant = Color(0xFF3F4948),
+        error = Color(0xFFFFB4AB),
+    )
+    dark && seed == "blue" -> darkColorScheme(
+        primary = Color(0xFFA9C7FF),
+        onPrimary = Color(0xFF00315C),
+        surface = Color(0xFF111318),
+        onSurface = Color(0xFFE2E2E9),
+        onSurfaceVariant = Color(0xFFC3C6CF),
+        surfaceContainer = Color(0xFF1D2024),
+        outline = Color(0xFF8D9199),
+    )
+    dark && seed == "orange" -> darkColorScheme(
+        primary = Color(0xFFFFB870),
+        onPrimary = Color(0xFF4A2800),
+        surface = Color(0xFF18120D),
+        onSurface = Color(0xFFEDE0D8),
+        onSurfaceVariant = Color(0xFFD5C3B5),
+        surfaceContainer = Color(0xFF251E19),
+        outline = Color(0xFF9E8E81),
+    )
+    dark -> darkColorScheme(
+        primary = Color(0xFFD0BCFF),
+        onPrimary = Color(0xFF381E72),
+        primaryContainer = Color(0xFF4F378B),
+        onPrimaryContainer = Color(0xFFEADDFF),
         secondary = Color(0xFFCCC2DC),
         tertiary = Color(0xFFEFB8C8),
+        surface = Color(0xFF141218),
+        onSurface = Color(0xFFE6E0E9),
+        onSurfaceVariant = Color(0xFFCAC4D0),
+        surfaceContainer = Color(0xFF211F26),
+        surfaceContainerHigh = Color(0xFF2B2930),
+        surfaceContainerLowest = Color(0xFF0F0D13),
+        outline = Color(0xFF948F99),
+        outlineVariant = Color(0xFF49454F),
+        error = Color(0xFFFFB4AB),
     )
-} else {
-    lightColorScheme(
-        primary = Color(if (seed == "teal") 0xFF006A6A else if (seed == "blue") 0xFF005DB7 else if (seed == "orange") 0xFF8B5000 else 0xFF6750A4),
+    seed == "teal" -> lightColorScheme(
+        primary = Color(0xFF006A6A),
+        onPrimary = Color(0xFFFFFFFF),
+        primaryContainer = Color(0xFF6FF7F6),
+        onPrimaryContainer = Color(0xFF002020),
+        secondary = Color(0xFF4A6363),
+        onSecondary = Color(0xFFFFFFFF),
+        secondaryContainer = Color(0xFFCCE8E7),
+        tertiary = Color(0xFF4B607C),
+        surface = Color(0xFFF4FBFA),
+        onSurface = Color(0xFF161D1D),
+        onSurfaceVariant = Color(0xFF3F4948),
+        surfaceContainer = Color(0xFFE9EFEE),
+        surfaceContainerHigh = Color(0xFFE3E9E8),
+        surfaceContainerLowest = Color(0xFFFFFFFF),
+        outline = Color(0xFF6F7978),
+        outlineVariant = Color(0xFFBEC9C8),
+        error = Color(0xFFBA1A1A),
+    )
+    seed == "blue" -> lightColorScheme(
+        primary = Color(0xFF005DB7),
+        onPrimary = Color(0xFFFFFFFF),
+        primaryContainer = Color(0xFFD6E3FF),
+        onPrimaryContainer = Color(0xFF001B3D),
+        secondary = Color(0xFF555F71),
+        surface = Color(0xFFF9F9FF),
+        onSurface = Color(0xFF1A1B20),
+        onSurfaceVariant = Color(0xFF44474E),
+        surfaceContainer = Color(0xFFEEEDF4),
+        outline = Color(0xFF74777F),
+    )
+    seed == "orange" -> lightColorScheme(
+        primary = Color(0xFF8B5000),
+        onPrimary = Color(0xFFFFFFFF),
+        surface = Color(0xFFFFF8F5),
+        onSurface = Color(0xFF221A15),
+        onSurfaceVariant = Color(0xFF51443A),
+        surfaceContainer = Color(0xFFF7EDE7),
+        outline = Color(0xFF837468),
+    )
+    else -> lightColorScheme(
+        primary = Color(0xFF6750A4),
+        onPrimary = Color(0xFFFFFFFF),
+        primaryContainer = Color(0xFFEADDFF),
+        onPrimaryContainer = Color(0xFF21005D),
         secondary = Color(0xFF625B71),
+        onSecondary = Color(0xFFFFFFFF),
+        secondaryContainer = Color(0xFFE8DEF8),
         tertiary = Color(0xFF7D5260),
+        surface = Color(0xFFFEF7FF),
+        onSurface = Color(0xFF1D1B20),
+        onSurfaceVariant = Color(0xFF49454F),
+        surfaceContainer = Color(0xFFF3EDF7),
+        surfaceContainerHigh = Color(0xFFECE6F0),
+        surfaceContainerLowest = Color(0xFFFFFFFF),
+        outline = Color(0xFF79747E),
+        outlineVariant = Color(0xFFCAC4D0),
+        error = Color(0xFFB3261E),
     )
 }
 

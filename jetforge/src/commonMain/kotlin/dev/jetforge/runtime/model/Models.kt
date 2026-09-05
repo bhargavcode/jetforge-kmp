@@ -106,6 +106,8 @@ data class UiNode(
     val type: String,
     val props: JsonObject = JsonObject(emptyMap()),
     val modifiers: ModifierSpec = ModifierSpec(),
+    /** Flow alignment / optional peer anchors from published studio docs. */
+    val constraints: ConstraintSpec? = null,
     val animation: EnterAnimation? = null,
     val bindings: Map<String, String> = emptyMap(),
     val children: List<UiNode> = emptyList(),
@@ -117,15 +119,48 @@ data class UiNode(
     val visibleWhen: String? = null,
 )
 
+/**
+ * Alignment hints for Column/Row/Box children.
+ * Peer-anchor fields are optional for older published documents;
+ * Column/Row use flow layout; Box may fall back to a peer layout pass.
+ */
+@Serializable
+data class ConstraintSpec(
+    val horizontal: String? = null,
+    val vertical: String? = null,
+    val margin: PaddingSpec? = null,
+    val startToStartOf: String? = null,
+    val startToEndOf: String? = null,
+    val endToStartOf: String? = null,
+    val endToEndOf: String? = null,
+    val topToTopOf: String? = null,
+    val topToBottomOf: String? = null,
+    val bottomToTopOf: String? = null,
+    val bottomToBottomOf: String? = null,
+    val horizontalCenterOf: String? = null,
+    val verticalCenterOf: String? = null,
+)
+
 @Serializable
 data class ModifierSpec(
     val fillMaxWidth: Boolean = false,
     val fillMaxHeight: Boolean = false,
+    val fillMaxSize: Boolean = false,
+    val widthMode: String? = null,
+    val heightMode: String? = null,
     val widthDp: Int? = null,
     val heightDp: Int? = null,
     val weight: Float? = null,
     val padding: PaddingSpec? = null,
+    val margin: PaddingSpec? = null,
     val clip: String? = null,
+    val offsetXDp: Int? = null,
+    val offsetYDp: Int? = null,
+    val borderWidthDp: Int? = null,
+    val borderToken: String? = null,
+    val backgroundToken: String? = null,
+    val backgroundHex: String? = null,
+    val aspectRatio: Float? = null,
 )
 
 @Serializable
